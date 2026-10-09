@@ -1,0 +1,202 @@
+<!doctype html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="robots" content="noindex">
+<title>Прогулка по квартире</title>
+<style>
+  html,body{margin:0;height:100%;overflow:hidden;background:#15171a;font-family:-apple-system,Segoe UI,Roboto,sans-serif;color:#eee;touch-action:none}
+  #c{display:block;width:100%;height:100%}
+  #hud{position:fixed;inset:0;pointer-events:none}
+  #cross{position:fixed;left:50%;top:50%;width:14px;height:14px;margin:-7px 0 0 -7px;
+         border:2px solid rgba(255,255,255,.65);border-radius:50%;box-shadow:0 0 3px rgba(0,0,0,.6)}
+  #tip{position:fixed;left:12px;bottom:12px;font-size:13px;line-height:1.5;color:#cfd3d8;
+       background:rgba(0,0,0,.42);padding:8px 11px;border-radius:9px;max-width:60%}
+  #gate{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
+        background:rgba(12,14,16,.86);text-align:center;cursor:pointer;z-index:5}
+  #gate h1{font-size:19px;font-weight:600;margin:0 0 6px}
+  #gate p{font-size:14px;color:#aeb4ba;margin:3px 0;max-width:320px}
+  #gate .k{display:inline-block;background:#2a2e33;border-radius:5px;padding:1px 7px;margin:0 1px;font-size:12px}
+  #load{position:fixed;left:50%;top:58%;transform:translateX(-50%);font-size:13px;color:#9aa0a6;z-index:6}
+  .joy{position:fixed;bottom:0;width:50%;height:55%;z-index:3}
+  #joyL{left:0}#joyR{right:0}
+  #stick{position:fixed;width:98px;height:98px;margin:-49px 0 0 -49px;border-radius:50%;
+         border:2px solid rgba(255,255,255,.28);display:none;pointer-events:none;z-index:4}
+  #stick b{position:absolute;left:50%;top:50%;width:42px;height:42px;margin:-21px 0 0 -21px;border-radius:50%;
+           background:rgba(255,255,255,.3)}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"><div id="cross"></div>
+  <div id="tip"></div>
+  <div id="stick"><b></b></div>
+</div>
+<div id="load">загрузка квартиры…</div>
+<div id="gate" style="display:none">
+  <h1>Прогулка по квартире</h1>
+  <p><b>Компьютер:</b> <span class="k">W</span><span class="k">A</span><span class="k">S</span><span class="k">D</span> — идти, мышь — смотреть. Кликни, чтобы войти.</p>
+  <p><b>Телефон:</b> левый палец — идти, правый — смотреть.</p>
+  <p id="gate-note" style="color:#7f868c"></p>
+</div>
+<div class="joy" id="joyL"></div><div class="joy" id="joyR"></div>
+
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.169.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.169.0/examples/jsm/"
+}}
+</script>
+<script type="module">
+import * as THREE from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+
+const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
+const $ = id => document.getElementById(id);
+
+const renderer = new THREE.WebGLRenderer({canvas:$('c'), antialias:!isTouch});
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+renderer.setSize(innerWidth, innerHeight);
+renderer.outputColorSpace = THREE.SRGBColorSpace;
+renderer.toneMapping = THREE.ACESFilmicToneMapping;
+renderer.toneMappingExposure = 1.05;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x20242a);
+const pmrem = new THREE.PMREMGenerator(renderer);
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
+const sun = new THREE.DirectionalLight(0xfff2e0, 1.1); sun.position.set(4,8,3); scene.add(sun);
+scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+
+const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 200);
+camera.rotation.order = 'YXZ';
+
+// ── модель ходьбы (единый источник коллизии из сборки) ──
+let MODEL=null, rooms=[], doors=[], PR=0.2, EYE=1.6, SPEED=1.4;
+const toFloor = (x,z)=>[x, -z];                 // glTF -> план (Z=-y)
+function walkable(x,z){
+  const [fx,fy]=toFloor(x,z);
+  for(const d of doors) if(fx>=d[0]&&fx<=d[2]&&fy>=d[1]&&fy<=d[3]) return true;
+  for(const r of rooms) if(fx>=r[0]+PR&&fx<=r[2]-PR&&fy>=r[1]+PR&&fy<=r[3]-PR) return true;
+  return false;
+}
+
+async function boot(){
+  MODEL = await (await fetch('./walk_model.json?'+Date.now())).json();
+  rooms = Object.values(MODEL.rooms); doors = MODEL.doors||[];
+  PR=MODEL.player_r??0.2; EYE=MODEL.eye??1.6; SPEED=MODEL.speed??1.4;
+  const s = MODEL.start||[1,1,0];
+  camera.position.set(s[0], EYE, -s[1]);        // план -> glTF
+  yaw = s[2]||0;
+
+  const draco = new DRACOLoader();
+  draco.setDecoderPath('https://www.gstatic.com/draco/versioned/decoders/1.5.7/');
+  const loader = new GLTFLoader(); loader.setDRACOLoader(draco);
+  loader.load('./flat_walk.glb?'+Date.now(), g=>{
+      scene.add(g.scene);
+      $('load').style.display='none';
+      $('gate').style.display = isTouch ? 'none' : 'flex';
+      $('gate-note').textContent = `${rooms.length} комнат · ${doors.length} проёмов`;
+      tip();
+      renderer.setAnimationLoop(loop);
+    },
+    e=>{ if(e.total) $('load').textContent = 'загрузка '+Math.round(100*e.loaded/e.total)+'%'; },
+    err=>{ $('load').textContent='не загрузилось: '+err; });
+}
+
+// ── взгляд ──
+let yaw=0, pitch=0;
+const PITCH_MAX = Math.PI/2 - 0.05;
+function applyLook(){ camera.rotation.set(pitch, yaw, 0); }
+
+// десктоп: pointer lock + мышь
+if(!isTouch){
+  $('gate').addEventListener('click', ()=>$('c').requestPointerLock());
+  document.addEventListener('pointerlockchange', ()=>{
+    $('gate').style.display = document.pointerLockElement===$('c') ? 'none':'flex';
+  });
+  document.addEventListener('mousemove', e=>{
+    if(document.pointerLockElement!==$('c')) return;
+    yaw   -= e.movementX*0.0022;
+    pitch -= e.movementY*0.0022;
+    pitch = Math.max(-PITCH_MAX, Math.min(PITCH_MAX, pitch));
+    applyLook();
+  });
+}
+// клавиши
+const key={};
+addEventListener('keydown', e=>{key[e.code]=true;});
+addEventListener('keyup',   e=>{key[e.code]=false;});
+
+// телефон: левый джойстик — ход, правый — взгляд
+let moveX=0, moveY=0;
+function touchZone(el, onMove, onEnd){
+  let id=null, ox=0, oy=0;
+  el.addEventListener('touchstart', e=>{const t=e.changedTouches[0]; id=t.identifier; ox=t.clientX; oy=t.clientY; onMove(0,0,t);}, {passive:false});
+  el.addEventListener('touchmove', e=>{for(const t of e.changedTouches) if(t.identifier===id){onMove(t.clientX-ox, t.clientY-oy, t); e.preventDefault();}}, {passive:false});
+  const end=e=>{for(const t of e.changedTouches) if(t.identifier===id){id=null; onEnd&&onEnd();}};
+  el.addEventListener('touchend', end); el.addEventListener('touchcancel', end);
+}
+if(isTouch){
+  const stick=$('stick'), knob=stick.firstElementChild;
+  touchZone($('joyL'), (dx,dy,t)=>{
+    if(stick.style.display!=='block'){stick.style.display='block'; stick.style.left=t.clientX-dx+'px'; stick.style.top=t.clientY-dy+'px';}
+    const m=Math.min(1, Math.hypot(dx,dy)/46);
+    const a=Math.atan2(dy,dx);
+    moveX=Math.cos(a)*m; moveY=Math.sin(a)*m;
+    knob.style.transform=`translate(${Math.cos(a)*m*32}px,${Math.sin(a)*m*32}px)`;
+  }, ()=>{moveX=moveY=0; stick.style.display='none'; knob.style.transform='';});
+  touchZone($('joyR'), (dx,dy)=>{}, null);
+  // правый — инкрементальный поворот
+  (function(){ let id=null,lx=0,ly=0; const z=$('joyR');
+    z.addEventListener('touchstart',e=>{const t=e.changedTouches[0];id=t.identifier;lx=t.clientX;ly=t.clientY;},{passive:false});
+    z.addEventListener('touchmove',e=>{for(const t of e.changedTouches)if(t.identifier===id){
+        yaw-=(t.clientX-lx)*0.006; pitch-=(t.clientY-ly)*0.006;
+        pitch=Math.max(-PITCH_MAX,Math.min(PITCH_MAX,pitch)); applyLook();
+        lx=t.clientX;ly=t.clientY; e.preventDefault();}},{passive:false});
+    const end=e=>{for(const t of e.changedTouches)if(t.identifier===id)id=null;};
+    z.addEventListener('touchend',end); z.addEventListener('touchcancel',end);
+  })();
+}
+
+function tip(){ $('tip').textContent = isTouch
+  ? 'Два пальца: левый — идти, правый — смотреть. Зайди в санузел, подойди к плитке.'
+  : 'WASD — идти, мышь — смотреть, Esc — выйти. Зайди в санузел, подойди к плитке.'; }
+
+// ── шаг + коллизия (скольжение вдоль стен) ──
+const fwd=new THREE.Vector3(), rgt=new THREE.Vector3(), E=new THREE.Euler();
+let prev=performance.now();
+function loop(){
+  const now=performance.now(), dt=Math.min(0.05,(now-prev)/1000); prev=now;
+  let f=0,s=0;
+  if(!isTouch){
+    f=(key.KeyW||key.ArrowUp?1:0)-(key.KeyS||key.ArrowDown?1:0);
+    s=(key.KeyD||key.ArrowRight?1:0)-(key.KeyA||key.ArrowLeft?1:0);
+  } else { f=-moveY; s=moveX; }
+  if(f||s){
+    E.set(0,yaw,0);
+    fwd.set(0,0,-1).applyEuler(E); rgt.set(1,0,0).applyEuler(E);
+    let dx=(fwd.x*f+rgt.x*s), dz=(fwd.z*f+rgt.z*s);
+    const L=Math.hypot(dx,dz)||1; dx/=L; dz/=L;
+    const step=SPEED*dt;
+    dx*=step; dz*=step;
+    const x=camera.position.x, z=camera.position.z;
+    if(walkable(x+dx,z+dz)){camera.position.x+=dx;camera.position.z+=dz;}
+    else if(walkable(x+dx,z)){camera.position.x+=dx;}
+    else if(walkable(x,z+dz)){camera.position.z+=dz;}
+  }
+  camera.position.y=EYE;
+  renderer.render(scene,camera);
+}
+
+addEventListener('resize', ()=>{
+  camera.aspect=innerWidth/innerHeight; camera.updateProjectionMatrix();
+  renderer.setSize(innerWidth, innerHeight);
+});
+boot();
+</script>
+</body>
+</html>
