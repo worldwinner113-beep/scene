@@ -66,27 +66,32 @@ const renderer = new THREE.WebGLRenderer({canvas:$('c'), antialias:!isTouch});
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
 renderer.setSize(innerWidth, innerHeight);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
-renderer.toneMapping = THREE.NeutralToneMapping;   // T70: Khronos 3D Commerce — цвет товара верен (ΔE 11 vs AgX 58), не кино
+renderer.toneMapping = THREE.NeutralToneMapping;   // T70: Khronos 3D Commerce — цвет товара верен, не кино
 renderer.toneMappingExposure = 1.05;
+renderer.shadowMap.enabled = true;                 // T77-4: тени убирают «плоскость»
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x20242a);
 const pmrem = new THREE.PMREMGenerator(renderer);
 scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;   // фолбэк, пока грузится HDRI
-new RGBELoader().load('./interior.hdr', hdr=>{              // T70: настоящий HDRI интерьера (CC0 Poly Haven), не синтетика
+new RGBELoader().load('./interior.hdr', hdr=>{              // T70: настоящий HDRI интерьера (CC0 Poly Haven)
     hdr.mapping = THREE.EquirectangularReflectionMapping;
     scene.environment = pmrem.fromEquirectangular(hdr).texture; hdr.dispose();
-  }, undefined, ()=>{ /* HDRI не загрузился — остаётся RoomEnvironment, сцена не тёмная */ });
-const sun = new THREE.DirectionalLight(0xffe3bd, 0.7);     // тёплый свет, мягкий поверх HDRI
-sun.position.set(4,8,3); scene.add(sun);
-scene.add(new THREE.AmbientLight(0xffffff, 0.12));
+  }, undefined, ()=>{ /* HDRI не загрузился — остаётся RoomEnvironment */ });
+const sun = new THREE.DirectionalLight(0xffe3bd, 1.0);     // тёплый свет, бросает тень
+sun.castShadow = true; sun.shadow.mapSize.set(2048, 2048); sun.shadow.bias = -0.0005;
+scene.add(sun);
+scene.add(new THREE.AmbientLight(0xffffff, 0.10));
+const winMats = [];                                        // материалы окон — гасим ночью (T77-2)
 const lamps = [];                                          // тёплые лампы ~3000K по комнатам (режим «вечер»)
 let evening = false;
 function setMode(ev){
     evening = ev;
-    if('environmentIntensity' in scene) scene.environmentIntensity = ev ? 0.16 : 1.0;
-    sun.intensity = ev ? 0.12 : 0.7;
-    for(const p of lamps) p.intensity = ev ? 16 : 0;
+    if('environmentIntensity' in scene) scene.environmentIntensity = ev ? 0.14 : 1.0;
+    sun.intensity = ev ? 0.10 : 1.0;
+    for(const p of lamps) p.intensity = ev ? 9 : 0;                 // T77-3: меньше пережёлта
+    for(const m of winMats) m.emissiveIntensity = ev ? 0.04 : 0.8;  // T77-2: окно не светится ночью
     const b = document.getElementById('mode'); if(b) b.textContent = ev ? '🌙 вечер' : '☀ день';
 }
 
@@ -103,12 +108,25 @@ function walkable(x,z){
   return false;
 }
 
+function addCeiling(){                               // T77-1: потолок (процедурный, не из glb)
+  const [W,L] = MODEL.flat || [10.46, 9.59];
+  const H = MODEL.wall_h || 2.7;
+  const geo = new THREE.PlaneGeometry(W+0.4, L+0.4); geo.rotateX(Math.PI/2);
+  const c = new THREE.Mesh(geo, new THREE.MeshStandardMaterial({color:0xece7df, roughness:0.95, side:THREE.DoubleSide}));
+  c.position.set(W/2, H, -L/2); c.receiveShadow = true; scene.add(c);
+  sun.position.set(W*0.62, 14, -L*0.32);            // солнце накрывает всю квартиру
+  sun.target.position.set(W/2, 0, -L/2); scene.add(sun.target); sun.target.updateMatrixWorld();
+  const R = Math.max(W, L);
+  Object.assign(sun.shadow.camera, {left:-R, right:R, top:R, bottom:-R, near:0.5, far:60});
+  sun.shadow.camera.updateProjectionMatrix();
+}
+
 async function boot(){
   MODEL = await (await fetch('./walk_model.json?'+Date.now())).json();
   rooms = Object.values(MODEL.rooms); doors = MODEL.doors||[];
   PR=MODEL.player_r??0.2; EYE=MODEL.eye??1.6; SPEED=MODEL.speed??1.4;
   for(const r of rooms){                          // тёплая лампа (3000K) в центре каждой комнаты
-    const p = new THREE.PointLight(0xffb46b, 0, 9, 2);
+    const p = new THREE.PointLight(0xffd3a0, 0, 9, 2);   // мягкий тёплый, не морковный
     p.position.set((r[0]+r[2])/2, 2.2, -(r[1]+r[3])/2); scene.add(p); lamps.push(p);
   }
   setMode(false);                                 // старт — день
@@ -122,6 +140,14 @@ async function boot(){
   const loader = new GLTFLoader(); loader.setDRACOLoader(draco);
   loader.load('./flat_walk.glb?'+Date.now(), g=>{
       scene.add(g.scene);
+      g.scene.traverse(o=>{                          // T77-4 тени + T77-2 собрать материалы окон
+        if(!o.isMesh) return;
+        o.castShadow = true; o.receiveShadow = true;
+        for(const m of (Array.isArray(o.material)?o.material:[o.material]))
+          if(m && /Окна/.test(m.name||'')) winMats.push(m);
+      });
+      addCeiling();                                  // T77-1 потолок
+      setMode(false);                                // применить окна/тени к дневному режиму
       $('load').style.display='none';
       $('gate').style.display = isTouch ? 'none' : 'flex';
       $('gate-note').textContent = `${rooms.length} комнат · ${doors.length} проёмов`;
