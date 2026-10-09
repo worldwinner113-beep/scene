@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="utf-8">
+<meta name="robots" content="noindex, nofollow">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Квартира · московская планировка с диваном KURILI</title>
+<script src="model-viewer.min.js"></script>
+<style>
+  html,body{margin:0;height:100%;background:#eceae6;overflow:hidden;
+    font-family:-apple-system,system-ui,"Segoe UI",Roboto,sans-serif;-webkit-text-size-adjust:100%}
+  model-viewer{width:100vw;height:100dvh;background:#eceae6}
+  #hint{position:fixed;left:50%;bottom:max(24px,env(safe-area-inset-bottom));transform:translateX(-50%);
+    background:rgba(20,20,22,.72);color:#fff;padding:9px 16px;border-radius:999px;font-size:15px;
+    pointer-events:none;transition:opacity .5s ease;z-index:5;text-align:center}
+  #hint.gone{opacity:0}
+  #bar{position:fixed;top:0;left:0;height:3px;width:0;background:#2b7;z-index:6;transition:width .25s}
+  #err{position:fixed;left:16px;right:16px;bottom:16px;background:#c0392b;color:#fff;padding:12px 14px;
+    border-radius:12px;font-size:14px;display:none;z-index:7;line-height:1.35}
+  #tag{position:fixed;top:10px;left:12px;background:rgba(20,20,22,.6);color:#fff;padding:6px 11px;
+    border-radius:10px;font-size:13px;z-index:5;line-height:1.3}
+</style>
+</head>
+<body>
+  <div id="bar"></div>
+  <div id="tag">8 помещений · санузел 383 плитки (156 резаных) · диван KURILI 2,96 × 2,39 м</div>
+  <model-viewer id="mv" src="flat.glb"
+    camera-controls touch-action="none" interaction-prompt="none"
+    auto-rotate auto-rotate-delay="1500" rotation-per-second="12deg"
+    camera-orbit="25deg 52deg 19m" field-of-view="45deg"
+    min-camera-orbit="auto 3deg 1.5m" max-camera-orbit="auto 89deg 40m"
+    exposure="1.15" shadow-intensity="0.8" environment-image="neutral">
+  </model-viewer>
+  <div id="hint">крутите пальцем · щипком загляните в санузел</div>
+  <div id="err"></div>
+<script>
+  const mv=document.getElementById('mv'),bar=document.getElementById('bar'),
+        hint=document.getElementById('hint'),err=document.getElementById('err');
+  function fail(m){err.style.display='block';err.textContent='Не загрузилось: '+m;}
+  mv.addEventListener('progress',e=>{const p=Math.max(2,Math.round(e.detail.totalProgress*100));
+    bar.style.width=p+'%';if(p>=100)setTimeout(()=>bar.style.opacity=0,400);});
+  mv.addEventListener('error',e=>fail(JSON.stringify(e.detail&&e.detail.type||'источник модели')));
+  window.addEventListener('error',e=>fail(e.message||'скрипт вьюера'));
+  ['pointerdown','touchstart'].forEach(ev=>mv.addEventListener(ev,()=>hint.classList.add('gone'),{once:true,passive:true}));
+</script>
+</body>
+</html>
