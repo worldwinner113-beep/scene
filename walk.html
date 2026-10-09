@@ -13,6 +13,9 @@
          border:2px solid rgba(255,255,255,.65);border-radius:50%;box-shadow:0 0 3px rgba(0,0,0,.6)}
   #tip{position:fixed;left:12px;bottom:12px;font-size:13px;line-height:1.5;color:#cfd3d8;
        background:rgba(0,0,0,.42);padding:8px 11px;border-radius:9px;max-width:60%}
+  #mode{position:fixed;right:12px;top:12px;z-index:6;pointer-events:auto;cursor:pointer;font-family:inherit;
+        font-size:13px;color:#e7e9ec;background:rgba(0,0,0,.5);border:1px solid rgba(255,255,255,.22);
+        border-radius:9px;padding:7px 12px}
   #gate{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;flex-direction:column;
         background:rgba(12,14,16,.86);text-align:center;cursor:pointer;z-index:5}
   #gate h1{font-size:19px;font-weight:600;margin:0 0 6px}
@@ -34,6 +37,7 @@
   <div id="stick"><b></b></div>
 </div>
 <div id="load">загрузка квартиры…</div>
+<button id="mode">☀ день</button>
 <div id="gate" style="display:none">
   <h1>Прогулка по квартире</h1>
   <p><b>Компьютер:</b> <span class="k">W</span><span class="k">A</span><span class="k">S</span><span class="k">D</span> — идти, мышь — смотреть. Кликни, чтобы войти.</p>
@@ -53,6 +57,7 @@ import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { DRACOLoader } from 'three/addons/loaders/DRACOLoader.js';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RGBELoader } from 'three/addons/loaders/RGBELoader.js';
 
 const isTouch = matchMedia('(pointer: coarse)').matches || 'ontouchstart' in window;
 const $ = id => document.getElementById(id);
@@ -67,9 +72,23 @@ renderer.toneMappingExposure = 1.05;
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x20242a);
 const pmrem = new THREE.PMREMGenerator(renderer);
-scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;
-const sun = new THREE.DirectionalLight(0xfff2e0, 1.1); sun.position.set(4,8,3); scene.add(sun);
-scene.add(new THREE.AmbientLight(0xffffff, 0.25));
+scene.environment = pmrem.fromScene(new RoomEnvironment(), 0.05).texture;   // фолбэк, пока грузится HDRI
+new RGBELoader().load('./interior.hdr', hdr=>{              // T70: настоящий HDRI интерьера (CC0 Poly Haven), не синтетика
+    hdr.mapping = THREE.EquirectangularReflectionMapping;
+    scene.environment = pmrem.fromEquirectangular(hdr).texture; hdr.dispose();
+  }, undefined, ()=>{ /* HDRI не загрузился — остаётся RoomEnvironment, сцена не тёмная */ });
+const sun = new THREE.DirectionalLight(0xffe3bd, 0.7);     // тёплый свет, мягкий поверх HDRI
+sun.position.set(4,8,3); scene.add(sun);
+scene.add(new THREE.AmbientLight(0xffffff, 0.12));
+const lamps = [];                                          // тёплые лампы ~3000K по комнатам (режим «вечер»)
+let evening = false;
+function setMode(ev){
+    evening = ev;
+    if('environmentIntensity' in scene) scene.environmentIntensity = ev ? 0.16 : 1.0;
+    sun.intensity = ev ? 0.12 : 0.7;
+    for(const p of lamps) p.intensity = ev ? 16 : 0;
+    const b = document.getElementById('mode'); if(b) b.textContent = ev ? '🌙 вечер' : '☀ день';
+}
 
 const camera = new THREE.PerspectiveCamera(70, innerWidth/innerHeight, 0.05, 200);
 camera.rotation.order = 'YXZ';
@@ -88,6 +107,12 @@ async function boot(){
   MODEL = await (await fetch('./walk_model.json?'+Date.now())).json();
   rooms = Object.values(MODEL.rooms); doors = MODEL.doors||[];
   PR=MODEL.player_r??0.2; EYE=MODEL.eye??1.6; SPEED=MODEL.speed??1.4;
+  for(const r of rooms){                          // тёплая лампа (3000K) в центре каждой комнаты
+    const p = new THREE.PointLight(0xffb46b, 0, 9, 2);
+    p.position.set((r[0]+r[2])/2, 2.2, -(r[1]+r[3])/2); scene.add(p); lamps.push(p);
+  }
+  setMode(false);                                 // старт — день
+  const mb = document.getElementById('mode'); if(mb) mb.addEventListener('click', ()=>setMode(!evening));
   const s = MODEL.start||[1,1,0];
   camera.position.set(s[0], EYE, -s[1]);        // план -> glTF
   yaw = s[2]||0;
